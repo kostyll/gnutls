@@ -1,3 +1,11 @@
+FOR THE HEARTBLEED TESTING FUNCTIONALITY, PLEASE CHECKOUT THE
+BRANCH NAMED `gnutls_3_2_x'
+
+
+
+
+=======================
+
 GnuTLS README -- Important introductory notes.
 Copyright (C) 2000-2012 Free Software Foundation, Inc.
 See the end of this document for copying conditions.

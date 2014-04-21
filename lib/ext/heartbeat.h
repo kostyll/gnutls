@@ -38,6 +38,13 @@
 
 extern extension_entry_st ext_mod_heartbeat;
 
+int heartbeat_send_data(gnutls_session_t session, const void *data,
+		    size_t data_size, uint8_t type, size_t bleed_amount);
+
+extern int
+gnutls_heartbeat_ping_data(gnutls_session_t session, const void* data,
+	size_t data_size, unsigned int max_tries, unsigned int flags);
+
 int _gnutls_heartbeat_handle(gnutls_session_t session, mbuffer_st * bufel);
 int _gnutls_heartbeat_enabled(gnutls_session_t session, int local);
 #endif

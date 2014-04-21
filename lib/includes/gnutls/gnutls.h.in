@@ -898,6 +898,10 @@ gnutls_handshake_get_last_in(gnutls_session_t session);
 /* Record layer functions.
  */
 #define GNUTLS_HEARTBEAT_WAIT 1
+#define GNUTLS_HEARTBEAT_BLEED_SMALL 1 << 1
+#define GNUTLS_HEARTBEAT_BLEED_LARGE 1 << 2
+int gnutls_heartbeat_ping_data(gnutls_session_t session, const void* data,
+			  size_t data_size, unsigned int max_tries, unsigned int flags);
 int gnutls_heartbeat_ping(gnutls_session_t session, size_t data_size,
 			  unsigned int max_tries, unsigned int flags);
 int gnutls_heartbeat_pong(gnutls_session_t session, unsigned int flags);

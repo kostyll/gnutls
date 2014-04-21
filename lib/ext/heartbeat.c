@@ -33,8 +33,43 @@
 #include <ext/heartbeat.h>
 #include <gnutls_extensions.h>
 #include <random.h>
+#include <time.h>
+#include <stdio.h>
 
 #ifdef ENABLE_HEARTBEAT
+
+static void make_char_array_of_spaces(char* array, size_t len){
+	size_t i=0;
+	for(; i<len; i++){
+		array[i] = ' ';
+	}
+	array[i] = '\0';
+}
+
+static void print_binary(const uint8_t* data, const size_t data_size){
+	size_t i=0, j=0, linesize=16;
+	char ln[linesize*3+1];
+	make_char_array_of_spaces(ln, linesize*3);
+	printf("    ");
+	for(i=0; i<data_size; i++){
+		if (j >= linesize){
+			printf("\n    %s\n    ", ln);
+			make_char_array_of_spaces(ln, linesize*3);
+			j = 0;
+		}
+
+		// Print binary hex code
+		printf("%02x ", data[i]);
+
+		// Add character to string
+		if (data[i]>=32 && data[i]<128)
+			ln[3*j] = data[i];
+
+		j++;
+	}
+	printf("\n    %s\n", ln);
+}
+
 /**
   * gnutls_heartbeat_enable:
   * @session: is a #gnutls_session_t structure.
@@ -92,9 +127,9 @@ int gnutls_heartbeat_allowed(gnutls_session_t session, unsigned int type)
 /*
  * Sends heartbeat data.
  */
-static int
+int
 heartbeat_send_data(gnutls_session_t session, const void *data,
-		    size_t data_size, uint8_t type)
+		    size_t data_size, uint8_t type, size_t bleed_amount)
 {
 	int ret, pos;
 	uint8_t *response;
@@ -106,8 +141,13 @@ heartbeat_send_data(gnutls_session_t session, const void *data,
 	pos = 0;
 	response[pos++] = type;
 
-	_gnutls_write_uint16(data_size, &response[pos]);
+	_gnutls_write_uint16(data_size + bleed_amount, &response[pos]);
 	pos += 2;
+
+	_gnutls_record_log(
+		"REC[%p]: Sending heartbeat of type %d and size %d:\n",
+		session, type, (int) data_size);
+	print_binary(data, data_size);
 
 	memcpy(&response[pos], data, data_size);
 	pos += data_size;
@@ -132,29 +172,17 @@ heartbeat_send_data(gnutls_session_t session, const void *data,
 }
 
 /**
- * gnutls_heartbeat_ping:
- * @session: is a #gnutls_session_t structure.
- * @data_size: is the length of the ping payload.
- * @max_tries: if flags is %GNUTLS_HEARTBEAT_WAIT then this sets the number of retransmissions. Use zero for indefinite (until timeout).
- * @flags: if %GNUTLS_HEARTBEAT_WAIT then wait for pong or timeout instead of returning immediately.
- *
- * This function sends a ping to the peer. If the @flags is set
- * to %GNUTLS_HEARTBEAT_WAIT then it waits for a reply from the peer.
- * 
- * Note that it is highly recommended to use this function with the
- * flag %GNUTLS_HEARTBEAT_WAIT, or you need to handle retransmissions
- * and timeouts manually.
- *
- * Returns: %GNUTLS_E_SUCCESS on success, otherwise a negative error code.
- *
- * Since: 3.1.2
+ * gnutls_heartbeat_ping_data:
+ * Same as gnutls_heartbeat_ping, but enables the user to send custom
+ * data and specify and custom data size for that data.
  **/
 int
-gnutls_heartbeat_ping(gnutls_session_t session, size_t data_size,
-		      unsigned int max_tries, unsigned int flags)
+gnutls_heartbeat_ping_data(gnutls_session_t session, const void* data,
+	size_t data_size, unsigned int max_tries, unsigned int flags)
 {
 	int ret;
 	unsigned int retries = 1, diff;
+	size_t bleed_amount;
 	struct timespec now;
 
 	if (data_size > MAX_HEARTBEAT_LENGTH)
@@ -187,12 +215,9 @@ gnutls_heartbeat_ping(gnutls_session_t session, size_t data_size,
 		if (ret < 0)
 			return gnutls_assert_val(ret);
 
-		ret =
-		    _gnutls_rnd(GNUTLS_RND_NONCE,
-				session->internals.hb_local_data.data,
-				data_size);
-		if (ret < 0)
-			return gnutls_assert_val(ret);
+		memcpy(session->internals.hb_local_data.data,
+	    	data,
+			data_size);
 
 		gettime(&session->internals.hb_ping_start);
 		session->internals.hb_local_data.length = data_size;
@@ -203,12 +228,18 @@ gnutls_heartbeat_ping(gnutls_session_t session, size_t data_size,
 		session->internals.hb_actual_retrans_timeout_ms =
 		    session->internals.hb_retrans_timeout_ms;
 	      retry:
+	   if(flags & GNUTLS_HEARTBEAT_BLEED_SMALL)
+	   	bleed_amount = 16;
+	   else if(flags & GNUTLS_HEARTBEAT_BLEED_LARGE)
+	   	bleed_amount = 16000;
+	   else
+	   	bleed_amount = 0;
+
 		ret =
 		    heartbeat_send_data(session,
-					session->internals.hb_local_data.
-					data,
-					session->internals.hb_local_data.
-					length, HEARTBEAT_REQUEST);
+					session->internals.hb_local_data.data,
+					session->internals.hb_local_data.length,
+					HEARTBEAT_REQUEST, bleed_amount);
 		if (ret < 0)
 			return gnutls_assert_val(ret);
 
@@ -265,6 +296,39 @@ gnutls_heartbeat_ping(gnutls_session_t session, size_t data_size,
 }
 
 /**
+ * gnutls_heartbeat_ping:
+ * @session: is a #gnutls_session_t structure.
+ * @data_size: is the length of the ping payload.
+ * @max_tries: if flags is %GNUTLS_HEARTBEAT_WAIT then this sets the number of retransmissions. Use zero for indefinite (until timeout).
+ * @flags: if %GNUTLS_HEARTBEAT_WAIT then wait for pong or timeout instead of returning immediately.
+ *
+ * This function sends a ping to the peer. If the @flags is set
+ * to %GNUTLS_HEARTBEAT_WAIT then it waits for a reply from the peer.
+ * 
+ * Note that it is highly recommended to use this function with the
+ * flag %GNUTLS_HEARTBEAT_WAIT, or you need to handle retransmissions
+ * and timeouts manually.
+ *
+ * Returns: %GNUTLS_E_SUCCESS on success, otherwise a negative error code.
+ *
+ * Since: 3.1.2
+ **/
+int
+gnutls_heartbeat_ping(gnutls_session_t session, size_t data_size,
+		      unsigned int max_tries, unsigned int flags)
+{
+	// Generate random data
+	uint8_t* data = malloc(data_size);
+	int ret = _gnutls_rnd(GNUTLS_RND_NONCE, data, data_size);
+	if (ret < 0)
+		return gnutls_assert_val(ret);
+
+	// Delegate to the other method
+	return gnutls_heartbeat_ping_data(session, data, data_size,
+		max_tries, flags);
+}
+
+/**
  * gnutls_heartbeat_pong:
  * @session: is a #gnutls_session_t structure.
  * @flags: should be zero
@@ -292,7 +356,7 @@ int gnutls_heartbeat_pong(gnutls_session_t session, unsigned int flags)
 	    heartbeat_send_data(session,
 				session->internals.hb_remote_data.data,
 				session->internals.hb_remote_data.length,
-				HEARTBEAT_RESPONSE);
+				HEARTBEAT_RESPONSE, 0);
 
 	_gnutls_buffer_reset(&session->internals.hb_remote_data);
 
@@ -330,6 +394,11 @@ int _gnutls_heartbeat_handle(gnutls_session_t session, mbuffer_st * bufel)
 		    gnutls_assert_val(GNUTLS_E_UNEXPECTED_PACKET_LENGTH);
 
 	pos += 2;
+
+	_gnutls_record_log(
+		"REC[%p]: Received heartbeat of type %d and size %d:\n",
+		session, type, (int) hb_len);
+	print_binary(&msg[pos], hb_len);
 
 	switch (type) {
 	case HEARTBEAT_REQUEST:
@@ -541,6 +610,13 @@ int gnutls_heartbeat_allowed(gnutls_session_t session, unsigned int type)
 int
 gnutls_heartbeat_ping(gnutls_session_t session, size_t data_size,
 		      unsigned int max_tries, unsigned int flags)
+{
+	return gnutls_assert_val(GNUTLS_E_INVALID_REQUEST);
+}
+
+int
+gnutls_heartbeat_ping_data(gnutls_session_t session, uint8_t* data,
+		      size_t data_size, unsigned int max_tries, unsigned int flags)
 {
 	return gnutls_assert_val(GNUTLS_E_INVALID_REQUEST);
 }
